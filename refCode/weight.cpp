@@ -212,9 +212,11 @@ string FILE_DIR = "/data/pic/records/";
 string TIME_FILE = "2019-7-1";
 string strWeightFile = "weight_records.txt";
 bool isGenWeightData = false;
+int genWeightDataLimit = 3;
+string batchNumber = "";
 
 /* sqlite3 */
-char sql_create_weight[1024] = "CREATE TABLE IF NOT EXISTS 'weight_records' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'weight' REAL NOT NULL, 'time' TEXT NOT NULL, 'rgbfilename' TEXT NOT NULL, 'depthfilename' TEXT NOT NULL, 'pointfilename' TEXT NOT NULL)";
+char sql_create_weight[1024] = "CREATE TABLE IF NOT EXISTS 'weight_records' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'weight' REAL NOT NULL, 'time' TEXT NOT NULL, 'batchnumber' TEXT NOT NULL,'rgbfilename' TEXT NOT NULL, 'depthfilename' TEXT NOT NULL, 'pointfilename' TEXT NOT NULL)";
 
 char sql_create_index[200] = "CREATE INDEX 'weightId' ON 'weight_records' ('id')";
 
@@ -258,17 +260,17 @@ time_t stringToDatetime(const std::string &time_string)
 	return time1;
 }
 
-bool loadConfig()
+bool loadConfig(string &config_file)
 {
 	//load config
-	INIReader reader("/etc/weight/config.ini");
+	INIReader reader(config_file);
 	if (reader.ParseError() < 0)
 	{
-		std::cout << "Can't load 'config.ini'\n";
+		std::cout << "Can't load config file:" << config_file << std::endl;
 		return false;
 	}
 	config.init(reader);
-	std::cout << "Config loaded from /etc/weight/config.ini:  \n"
+	std::cout << "Config loaded from:" << config_file << std::endl
 			  << "***********************************\n"
 			  << config.str()
 			  << "***********************************\n";
@@ -279,6 +281,8 @@ bool init(AXonLinkCamParam &camParam)
 {
 	/* 打开数据库，并创建表 */
 	open_db();
+
+	makeDir(FILE_DIR.c_str());
 
 	// Initial OpenNI
 	Status rc = OpenNI::initialize();
@@ -767,27 +771,13 @@ void *get_weight(void *arg)
 	string temp_record = "";
 	string strFileName = "";
 
-	do
+	while (!protonect_shutdown)
 	{
-		unsigned char buf[14];
-		int rdlen;
-		rdlen = read(fd, buf, sizeof(buf) - 1);
-		std::cout << "read weighing device:" << buf << std::endl;
-		if (rdlen < 0)
-		{
-			printf("Error from read: rdlen=%d,strerror=%s\n", rdlen, strerror(errno));
-			sleep(1);
+		if (isGenWeightData)
 			continue;
-		}
-		else
-		{
-			printf("read buf:%s\n", buf);
-		}
 
-		string temp((char *)buf);
-		string temp1(temp, 2, 7);
-		tempweight = atof(temp1.c_str());
 		pig_weight = tempweight;
+
 		if (tempweight < config.WeightRangeMin || tempweight > config.WeightRangeMax)
 		{
 			lastweight = tempweight;
@@ -848,8 +838,10 @@ void *get_weight(void *arg)
 			isWeighted = false;
 			continue;
 		}
-		/* repeat read to get full message */
-	} while (1);
+		int key = waitKey(1);
+		protonect_shutdown = protonect_shutdown || (key > 0 && ((key & 0xFF) == 27)); // shutdown on escape
+	}
+	std::cout << "exit get_weight\n";
 	return NULL;
 }
 
@@ -906,42 +898,17 @@ void *get_img_bw(void *arg)
 		pgby_size.pcd_file_name = file_time + ".pcd";
 
 		//test
-		static int index = 0;
 		if (isGenWeightData)
 		{
-			if (index < 20)
+			if (genWeightDataLimit <= 0)
 			{
-				isWeighted = true;
-				pig_weight = rand() % config.CollectInterval;
-			}
-		}
-
-		if (frames_count >= config.CollectInterval && isWeighted && pig_weight > config.WeightRangeMin && pig_weight < config.WeightRangeMax)
-		{
-			if (isGenWeightData)
-			{
-				++index;
+				protonect_shutdown = true;
+				break;
 			}
 
-			std::cout << "save file:" << file_time << std::endl;
-			isWeighted = false;
+			std::cout << "begin save file:" << file_time << std::endl;
 			getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
-			if (now->tm_min == 59)
-			{
-				last_min = 0;
-			}
-			if (now->tm_min - 1 > last_min && pig_weight == last_min_weight)
-			{
-				if (last_min == 0)
-				{
-					last_min = now->tm_min - 1;
-				}
-				continue;
-			}
 
-			frames_count = 0;
-			last_min = now->tm_min - 1;
-			last_min_weight = pig_weight;
 			if (config.CollectFormats.find("point") != string::npos)
 			{
 				pcl::io::savePCDFileBinary(file_pcd_name, *cloud);
@@ -951,39 +918,87 @@ void *get_img_bw(void *arg)
 			{
 				pcl::io::savePNGFile(file_img_name, *cloud, "rgb");
 			}
+			std::cout << "end save file:" << file_time << std::endl;
 			memset(buffer, 0, 80);
 			strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
-			table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png");
+			table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
+			genWeightDataLimit--;
+		}
+		else
+		{
+			if (frames_count >= config.CollectInterval && isWeighted && pig_weight > config.WeightRangeMin && pig_weight < config.WeightRangeMax)
+			{
+				std::cout << "save file:" << file_time << std::endl;
+				isWeighted = false;
+				getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
+				if (now->tm_min == 59)
+				{
+					last_min = 0;
+				}
+				if (now->tm_min - 1 > last_min && pig_weight == last_min_weight)
+				{
+					if (last_min == 0)
+					{
+						last_min = now->tm_min - 1;
+					}
+					continue;
+				}
+
+				frames_count = 0;
+				last_min = now->tm_min - 1;
+				last_min_weight = pig_weight;
+				if (config.CollectFormats.find("point") != string::npos)
+				{
+					pcl::io::savePCDFileBinary(file_pcd_name, *cloud);
+				}
+
+				if (config.CollectFormats.find("rgb") != string::npos)
+				{
+					pcl::io::savePNGFile(file_img_name, *cloud, "rgb");
+				}
+				batchNumber = string(buffer);
+				memset(buffer, 0, 80);
+				strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
+				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
+			}
 		}
 
 		int key = waitKey(1);
 		protonect_shutdown = protonect_shutdown || (key > 0 && ((key & 0xFF) == 27)); // shutdown on escape
 	}
+	std::cout << "exit get_img_bw begin\n";
 	mColorStream.destroy();
 	mDepthStream.destroy();
 	mDevice.close();
 	openni::OpenNI::shutdown();
+	std::cout << "exit get_img_bw end\n";
 }
 
 int main(int argc, char **argv)
 {
 	int res, t;
 	pthread_t img, weigh;
-	if (argc != 2)
+	if (argc < 3)
 	{
-		cout << "for example:./weight start_type[collect|camParam]" << endl;
+		cout << "for example:./weight config_file start_type[collect|camParam|test limit batch_number]" << endl;
 		exit(0);
 	}
 
-	string start_type(argv[1]);
+	string config_file(argv[1]);
+	string start_type(argv[2]);
 
 	if (start_type.compare("collect") == 0 || start_type.compare("test") == 0)
 	{
 		if (start_type.compare("test") == 0)
 		{
 			isGenWeightData = true;
+			genWeightDataLimit = atoi(argv[3]);
+			if (argc == 5)
+			{
+				batchNumber = string(argv[4]);
+			}
 		}
-		loadConfig();
+		loadConfig(config_file);
 		cout << "Create pthread img!" << endl;
 		res = pthread_create(&img, NULL, get_img_bw, NULL);
 		if (res != 0)
@@ -992,6 +1007,7 @@ int main(int argc, char **argv)
 			return -1;
 		}
 		cout << "Create pthread img success!" << endl;
+
 		cout << "Create pthread weigh!" << endl;
 		res = pthread_create(&weigh, NULL, get_weight, NULL);
 		if (res != 0)
@@ -1000,11 +1016,11 @@ int main(int argc, char **argv)
 			return -1;
 		}
 		cout << "Create pthread weigh success!" << endl;
-		pthread_join(img, NULL);
-		cout << "Join pthread img!" << endl;
 		pthread_join(weigh, NULL);
 		cout << "Join pthread weigh!" << endl;
-		pthread_exit(NULL);
+		pthread_join(img, NULL);
+		cout << "Join pthread img!" << endl;
+		exit(0);
 	}
 	else if (start_type.compare("camParam") == 0)
 	{
