@@ -887,7 +887,7 @@ void *get_img_bw(void *arg)
 
 		frames_count += 1;
 		strftime(buffer, 80, config.FileNameFormat.c_str(), now);
-		file_time = string(buffer) + '_' + float2string(pig_weight);
+		file_time = string(buffer) + '_' + int2string(frames_count) + '_' + float2string(pig_weight);
 		file_pcd_name = config.PointCloudFilePath + "/" + file_time + ".pcd";
 		file_img_name = config.RGBFilePath + "/" + file_time + ".jpg";
 		file_depth_name = config.DepthFilePath + "/" + file_time + ".png";
