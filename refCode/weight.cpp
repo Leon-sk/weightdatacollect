@@ -34,6 +34,9 @@
 #include <sstream>
 #include "AXonLink.h"
 
+#define READ_FIFO_PATH "/etc/weight/read.pipe"
+#define WRITE_FIFO_PATH "/etc/weight/write.pipe"
+
 using namespace std;
 using namespace cv;
 
@@ -219,6 +222,65 @@ string batchNumber = "";
 char sql_create_weight[1024] = "CREATE TABLE IF NOT EXISTS 'weight_records' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'weight' REAL NOT NULL, 'time' TEXT NOT NULL, 'batchnumber' TEXT NOT NULL,'rgbfilename' TEXT NOT NULL, 'depthfilename' TEXT NOT NULL, 'pointfilename' TEXT NOT NULL)";
 
 char sql_create_index[200] = "CREATE INDEX 'weightId' ON 'weight_records' ('id')";
+
+vector<string> split(const string &str, const string &pattern)
+{
+	vector<string> res;
+	if (str == "")
+		return res;
+
+	string strs = str + pattern;
+	size_t pos = strs.find(pattern);
+
+	while (pos != strs.npos)
+	{
+		string temp = strs.substr(0, pos);
+		temp.erase(std::remove(temp.begin(), temp.end(), '\n'), temp.end());
+		res.push_back(temp);
+		strs = strs.substr(pos + 1, strs.size());
+		pos = strs.find(pattern);
+	}
+
+	return res;
+}
+
+int readPipe(void)
+{
+	int pipe_fd;
+	/* Create the FIFO if it does not exist */
+	mkfifo(READ_FIFO_PATH, 0666 | S_IFIFO);
+	pipe_fd = open(READ_FIFO_PATH, O_RDONLY);
+
+	while (1)
+	{
+		char readbuf[64] = {0};
+		int readbytes = read(pipe_fd, readbuf, 64);
+		if (readbytes <= 0)
+			continue;
+
+		printf("readbuf:%s,readbytes:%d.\n", readbuf, readbytes);
+		vector<string> res = split(string(readbuf), ",");
+		std::cout << "buffer:"
+				  << "genWeightDataLimit=" << res[0] << ",batchNumber=" << res[1] << std::endl;
+		genWeightDataLimit = atoi(res[0].c_str());
+		batchNumber = res[1];
+	}
+	close(pipe_fd);
+	return (0);
+}
+
+int writePipe(string buffer)
+{
+	int pipe_fd;
+	/* Create the FIFO if it does not exist */
+	mkfifo(WRITE_FIFO_PATH, 0666 | S_IFIFO);
+	pipe_fd = open(WRITE_FIFO_PATH, O_WRONLY);
+
+	write(pipe_fd, buffer.c_str(), buffer.size());
+
+	close(pipe_fd);
+	return (0);
+}
 
 int open_db(void)
 {
@@ -885,6 +947,10 @@ void *get_img_bw(void *arg)
 		struct tm *now = std::localtime(&t);
 		string file_pcd_name, file_path, file_time, img_name, file_img_name, file_depth_name, file_depth_show_name;
 
+		if (frames_count > INT_MAX)
+		{
+			frames_count = 0;
+		}
 		frames_count += 1;
 		strftime(buffer, 80, config.FileNameFormat.c_str(), now);
 		file_time = string(buffer) + '_' + int2string(frames_count) + '_' + float2string(pig_weight);
@@ -901,10 +967,7 @@ void *get_img_bw(void *arg)
 		if (isGenWeightData)
 		{
 			if (genWeightDataLimit <= 0)
-			{
-				protonect_shutdown = true;
-				break;
-			}
+				continue;
 
 			std::cout << "begin save file:" << file_time << std::endl;
 			getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
@@ -923,10 +986,14 @@ void *get_img_bw(void *arg)
 			strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
 			table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
 			genWeightDataLimit--;
+			if (genWeightDataLimit == 0)
+			{
+				writePipe(batchNumber);
+			}
 		}
 		else
 		{
-			if (frames_count >= config.CollectInterval && isWeighted && pig_weight > config.WeightRangeMin && pig_weight < config.WeightRangeMax)
+			if (frames_count % config.CollectInterval == 0 && isWeighted && pig_weight > config.WeightRangeMin && pig_weight < config.WeightRangeMax)
 			{
 				std::cout << "save file:" << file_time << std::endl;
 				isWeighted = false;
@@ -1016,6 +1083,8 @@ int main(int argc, char **argv)
 			return -1;
 		}
 		cout << "Create pthread weigh success!" << endl;
+
+		readPipe();
 		pthread_join(weigh, NULL);
 		cout << "Join pthread weigh!" << endl;
 		pthread_join(img, NULL);
