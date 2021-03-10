@@ -981,25 +981,27 @@ void *get_img_bw(void *arg)
 			if (genWeightDataLimit <= 0)
 				continue;
 
-			std::cout << "begin save file:" << file_time << std::endl;
 			bool ret = getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
-			if (!ret)
-				continue;
-			std::cout << "getCloudXYZRGBCoordinate:file_depth_name=" << file_depth_name << "frames_count=" << frames_count << std::endl;
-
-			if (config.CollectFormats.find("point") != string::npos)
+			if (ret)
 			{
-				pcl::io::savePCDFileBinary(file_pcd_name, *cloud);
+				std::cout << "getCloudXYZRGBCoordinate:file_depth_name=" << file_depth_name << "frames_count=" << frames_count << std::endl;
+
+				std::cout << "begin save file:" << file_time << std::endl;
+				if (config.CollectFormats.find("point") != string::npos)
+				{
+					pcl::io::savePCDFileBinary(file_pcd_name, *cloud);
+				}
+
+				if (config.CollectFormats.find("rgb") != string::npos)
+				{
+					pcl::io::savePNGFile(file_img_name, *cloud, "rgb");
+				}
+				std::cout << "end save file:" << file_time << std::endl;
+				memset(buffer, 0, 80);
+				strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
+				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
 			}
 
-			if (config.CollectFormats.find("rgb") != string::npos)
-			{
-				pcl::io::savePNGFile(file_img_name, *cloud, "rgb");
-			}
-			std::cout << "end save file:" << file_time << std::endl;
-			memset(buffer, 0, 80);
-			strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
-			table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
 			genWeightDataLimit--;
 		}
 		else
