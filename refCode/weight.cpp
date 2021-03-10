@@ -36,6 +36,7 @@
 
 #define READ_FIFO_PATH "/etc/weight/read.pipe"
 #define WRITE_FIFO_PATH "/etc/weight/write.pipe"
+#define SAMPLE_READ_WAIT_TIMEOUT 2000
 
 using namespace std;
 using namespace cv;
@@ -618,6 +619,15 @@ bool getCloudXYZCoordinate(PointCloud::Ptr cloud_XYZ)
 
 bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &camParam, string file_depth_name, string file_depth_show_name)
 {
+
+	int changedStreamDummy;
+	openni::VideoStream *pStream = &mDepthStream;
+	if (OpenNI::waitForAnyStream(&pStream, 1, &changedStreamDummy, SAMPLE_READ_WAIT_TIMEOUT) != openni::STATUS_OK)
+	{
+		printf("Wait failed! (timeout is %d ms)\n%s\n", SAMPLE_READ_WAIT_TIMEOUT, OpenNI::getExtendedError());
+		return false;
+	}
+
 	openni::VideoFrameRef colorFrame;
 	mColorStream.readFrame(&colorFrame);
 	openni::RGB888Pixel *pColor = (openni::RGB888Pixel *)colorFrame.getData();
@@ -640,10 +650,12 @@ bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &ca
 			compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
 			compression_params.push_back(0);
 			cv::imwrite(file_depth_name, image, compression_params);
+			std::cout << "getCloudXYZCoordinate: save depth" << std::endl;
 
 			//save depth show
 			normalize(image, image, 0, 256 * 256, NORM_MINMAX);
 			cv::imwrite(file_depth_show_name, image);
+			std::cout << "getCloudXYZCoordinate: save depth show" << std::endl;
 		}
 
 		for (int y = 0; y < mDepthFrame.getHeight(); y++)
@@ -678,6 +690,7 @@ bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &ca
 				i++;
 			}
 		}
+		std::cout << "getCloudXYZCoordinate: end" << std::endl;
 		return true;
 	}
 	else
@@ -963,14 +976,16 @@ void *get_img_bw(void *arg)
 		pgby_size.weight_gd = pig_weight;
 		pgby_size.pcd_file_name = file_time + ".pcd";
 
-		//test
 		if (isGenWeightData)
 		{
 			if (genWeightDataLimit <= 0)
 				continue;
 
 			std::cout << "begin save file:" << file_time << std::endl;
-			getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
+			bool ret = getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
+			if (!ret)
+				continue;
+			std::cout << "getCloudXYZRGBCoordinate:file_depth_name=" << file_depth_name << "frames_count=" << frames_count << std::endl;
 
 			if (config.CollectFormats.find("point") != string::npos)
 			{
@@ -986,10 +1001,6 @@ void *get_img_bw(void *arg)
 			strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
 			table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
 			genWeightDataLimit--;
-			if (genWeightDataLimit == 0)
-			{
-				writePipe(batchNumber);
-			}
 		}
 		else
 		{
