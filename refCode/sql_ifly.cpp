@@ -54,14 +54,15 @@ int create_index(char *sql_create_index)
 	return 0;
 }
 
-int table_insert_weight(string time, double weight, string rgbfilename, string pcdfilename, string depthfilename, string batchnumber)
+int table_insert_weight(string time, double weight, string rgbfilename, string pcdfilename, string depthfilename, string batchnumber, double height)
 {
 	char strSql[1024] = {"\0"};
 	stringstream stringSql;
 
-	stringSql << "INSERT INTO weight_records (time,weight,batchnumber,rgbfilename,pointfilename,depthfilename) VALUES ("
+	stringSql << "INSERT INTO weight_records (time,weight,height,batchnumber,rgbfilename,pointfilename,depthfilename) VALUES ("
 			  << "'" << time << "',"
 			  << weight << ","
+			  << height << ","
 			  << "'" << batchnumber << "',"
 			  << "'" << rgbfilename << "',"
 			  << "'" << pcdfilename << "',"

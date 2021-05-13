@@ -29,6 +29,15 @@
 #include <pbs/OniSampleUtilities.h>
 #include <pbs/Pig_Body_Size.h>
 #include <pcl/io/png_io.h>
+#include <pcl/common/common.h>
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/search/search.h>
+#include <pcl/search/kdtree.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include "sql_ifly.h"
 #include "ini/INIReader.h"
 #include <sstream>
@@ -127,6 +136,14 @@ struct Config
 	string SerialPort;
 	long Baund;
 	string DataBase;
+	double FilterXMin;
+	double FilterXMax;
+	double FilterYMin;
+	double FilterYMax;
+	double FilterZMin;
+	double FilterZMax;
+	double RealZ;
+
 	void init(INIReader reader)
 	{
 		this->CollectFormats = reader.GetString("DEFAULT", "CollectFormats", "rgb,depth,pointCloud");
@@ -148,7 +165,15 @@ struct Config
 		this->SerialPort = reader.GetString("DEFAULT", "SerialPort", "/dev/ttyS3");
 		this->Baund = reader.GetInteger("DEFAULT", "Baund", 9600);
 		this->DataBase = reader.GetString("DEFAULT", "DataBase", "./weight.db");
+		this->FilterXMin = reader.GetReal("DEFAULT", "FilterXMin", -10.0);
+		this->FilterXMax = reader.GetReal("DEFAULT", "FilterXMax", 10.0);
+		this->FilterYMin = reader.GetReal("DEFAULT", "FilterYMin", -10.0);
+		this->FilterYMax = reader.GetReal("DEFAULT", "FilterYMax", 10.0);
+		this->FilterZMin = reader.GetReal("DEFAULT", "FilterZMin", -10.0);
+		this->FilterZMax = reader.GetReal("DEFAULT", "FilterZMax", 10.0);
+		this->RealZ = reader.GetReal("DEFAULT", "RealZ", 0.0);
 	}
+
 	string str()
 	{
 		ostringstream output;
@@ -216,11 +241,12 @@ string FILE_DIR = "/data/pic/records/";
 string TIME_FILE = "2019-7-1";
 string strWeightFile = "weight_records.txt";
 bool isGenWeightData = false;
+bool isGenOnlyOnce = false;
 int genWeightDataLimit = 3;
 string batchNumber = "";
 
 /* sqlite3 */
-char sql_create_weight[1024] = "CREATE TABLE IF NOT EXISTS 'weight_records' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'weight' REAL NOT NULL, 'time' TEXT NOT NULL, 'batchnumber' TEXT NOT NULL,'rgbfilename' TEXT NOT NULL, 'depthfilename' TEXT NOT NULL, 'pointfilename' TEXT NOT NULL)";
+char sql_create_weight[1024] = "CREATE TABLE IF NOT EXISTS 'weight_records' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'weight' REAL NOT NULL,'height' REAL NOT NULL, 'time' TEXT NOT NULL, 'batchnumber' TEXT NOT NULL,'rgbfilename' TEXT NOT NULL, 'depthfilename' TEXT NOT NULL, 'pointfilename' TEXT NOT NULL)";
 
 char sql_create_index[200] = "CREATE INDEX 'weightId' ON 'weight_records' ('id')";
 
@@ -617,6 +643,99 @@ bool getCloudXYZCoordinate(PointCloud::Ptr cloud_XYZ)
 	}
 }
 
+//Filter and get the ground height
+double PCD_Filter_Process(PointCloud::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filter)
+{
+	PointCloud::Ptr cloud_x(new PointCloud);
+	PointCloud::Ptr cloud_xy(new PointCloud);
+	PointCloud::Ptr cloud_xyz(new PointCloud);
+	pcl::PassThrough<PointT> ptfilter(true); // Initializing with true will allow us to extract the removed indices
+	ptfilter.setInputCloud(cloud);
+	ptfilter.setFilterFieldName("x");
+	//cout << "x threld" << ptxl_thresh << endl;
+	//cout << "x threld" << ptxr_thresh << endl;
+	ptfilter.setFilterLimits(config.FilterXMin, config.FilterXMax);
+	ptfilter.filter(*cloud_x);
+	//int x_M = cloud_x->points.size();
+	std::cerr << cloud_x->points.size() << std::endl;
+	if (cloud_x->points.size() == 0)
+		return 0.0;
+	pcl::PCDWriter writer;
+	writer.write("x.pcd", *cloud_x, false);
+
+	ptfilter.setInputCloud(cloud_x);
+	ptfilter.setFilterFieldName("y");
+	//cout << "y threld" << ptyl_thresh << endl;
+	//cout << "y threld" << ptyr_thresh << endl;
+	ptfilter.setFilterLimits(config.FilterYMin, config.FilterYMax);
+	//ptfilter.setNegative(true);
+	ptfilter.filter(*cloud_xy);
+	if (cloud_xy->points.size() == 0)
+		return 0.0;
+	pcl::PCDWriter writer_y;
+	writer_y.write("y.pcd", *cloud_xy, false);
+
+	ptfilter.setInputCloud(cloud_xy);
+	ptfilter.setFilterFieldName("z");
+
+	//ptfilter.setFilterLimits(ptzl_thresh, ptzr_thresh);
+	ptfilter.setFilterLimits(config.FilterZMin, config.FilterZMax);
+	//ptfilter.setNegative(false);
+	ptfilter.filter(*cloud_xyz);
+	cout << "size: " << cloud_xyz->points.size() << std::endl;
+	if (cloud_xyz->points.size() == 0)
+		return 0.0;
+	pcl::PCDWriter writer_z;
+	writer_y.write("z.pcd", *cloud_xyz, false);
+
+	//移除离群点
+	//PointCloud::Ptr cloud_filteredo(new PointCloud);
+
+	pcl::PointCloud<pcl::PointXYZ>::Ptr cloudn(new pcl::PointCloud<pcl::PointXYZ>);
+
+	int M = cloud_xyz->points.size();
+	std::cout << M << std::endl;
+	for (int i = 0; i < M; i++)
+	{
+		pcl::PointXYZ p;
+		p.x = cloud_xyz->points[i].x;
+		p.y = cloud_xyz->points[i].y;
+		p.z = cloud_xyz->points[i].z;
+		cloudn->points.push_back(p);
+	}
+	//pcl::copyPointCloud(cloud, cloudn);
+	//pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filteredo(new pcl::PointCloud<pcl::PointXYZ>);
+	// 填入点云数据
+	//pcl::PCDReader reader;
+	//// 把路径改为自己存放文件的路径
+	//reader.read<pcl::PointXYZ>(file_path_name, *cloudn);
+	//std::cerr << "Cloud before filtering: " << std::endl;
+	//std::cerr << *cloudn << std::endl;
+	// 创建滤波器对象
+
+	pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+
+	sor.setInputCloud(cloudn);
+	sor.setMeanK(50);
+	sor.setStddevMulThresh(1.0);
+
+	sor.filter(*cloud_filter);
+	std::cerr << "Cloud after filtering: " << std::endl;
+	std::cerr << *cloud_filter << std::endl;
+	pcl::PointXYZ min_p1, max_p1; //点云的最大值与最小值点
+	pcl::getMinMax3D(*cloud_filter, min_p1, max_p1);
+	std::cout << "Max z: " << max_p1.z << std::endl;
+	std::cout << "Min z: " << min_p1.z << std::endl;
+	//pcl::PCDWriter writer;
+	//writer.write<pcl::PointXYZ>("table_scene_lms400_inliers.pcd", *cloud_filteredo, false);
+	//sor.setNegative(true);
+	//sor.filter(*cloud_filteredo);
+	//writer.write<pcl::PointXYZ>("table_scene_lms400_outliers.pcd", *cloud_filteredo, false);
+	//
+
+	return fabs(max_p1.z) > fabs(min_p1.z) ? fabs(max_p1.z) : fabs(min_p1.z);
+}
+
 bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &camParam, string file_depth_name, string file_depth_show_name)
 {
 
@@ -642,6 +761,48 @@ bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &ca
 		double fScale = 0.001;
 		openni::DepthPixel *pDepthArray = (openni::DepthPixel *)mDepthFrame.getData();
 
+		for (int y = 0; y < mDepthFrame.getHeight(); y++)
+		{
+			for (int x = 0; x < mDepthFrame.getWidth(); x++)
+			{
+				int idx = x + y * mDepthFrame.getWidth();
+
+				const openni::DepthPixel rDepth = pDepthArray[idx];
+
+				//openni::CoordinateConverter::convertDepthToWorld(mDepthStream, x, y, rDepth, &fx, &fy, &fz);
+				//fx = -fx;
+				////fy = -fy;
+				//cloud_XYZRGB->points[i].x = fx * fScale;
+				//cloud_XYZRGB->points[i].y = fy * fScale;
+				//cloud_XYZRGB->points[i].z = -fz * fScale;
+				//cloud_XYZRGB->points[i].r = pColor[i].r;
+				//cloud_XYZRGB->points[i].g = pColor[i].g;
+				//cloud_XYZRGB->points[i].b = pColor[i].b;
+
+				pz = (float)rDepth;
+				px = (x - camParam.astDepthParam->cx) * pz / camParam.astDepthParam->fx;
+				py = (camParam.astDepthParam->cy - y) * pz / camParam.astDepthParam->fy;
+				cloud_XYZRGB->points[i].x = px * fScale;
+				cloud_XYZRGB->points[i].y = py * fScale;
+				cloud_XYZRGB->points[i].z = pz * fScale;
+				cloud_XYZRGB->points[i].r = pColor[i].r;
+				cloud_XYZRGB->points[i].g = pColor[i].g;
+				cloud_XYZRGB->points[i].b = pColor[i].b;
+
+				i++;
+			}
+		}
+
+		if (cloud_XYZRGB->points.size() == 0)
+			return false;
+
+		if (config.RealZ < 1e-15)
+		{
+			pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filter(new pcl::PointCloud<pcl::PointXYZ>);
+
+			config.RealZ = PCD_Filter_Process(cloud_XYZRGB, cloud_filter);
+		}
+
 		//save depth
 		if (config.CollectFormats.find("depth") != string::npos)
 		{
@@ -656,39 +817,6 @@ bool getCloudXYZRGBCoordinate(PointCloud::Ptr cloud_XYZRGB, AXonLinkCamParam &ca
 			normalize(image, image, 0, 256 * 256, NORM_MINMAX);
 			cv::imwrite(file_depth_show_name, image);
 			std::cout << "getCloudXYZCoordinate: save depth show" << std::endl;
-		}
-
-		for (int y = 0; y < mDepthFrame.getHeight(); y++)
-		{
-			for (int x = 0; x < mDepthFrame.getWidth(); x++)
-			{
-				int idx = x + y * mDepthFrame.getWidth();
-				const openni::DepthPixel rDepth = pDepthArray[idx];
-
-				/*
-				openni::CoordinateConverter::convertDepthToWorld(mDepthStream, x, y, rDepth, &fx, &fy, &fz);
-				fx = -fx;
-				fy = -fy;
-				cloud_XYZRGB->points[i].x = fx * fScale;
-				cloud_XYZRGB->points[i].y = fy * fScale;
-				cloud_XYZRGB->points[i].z = fz * fScale;
-				cloud_XYZRGB->points[i].r = pColor[i].r;
-				cloud_XYZRGB->points[i].g = pColor[i].g;
-				cloud_XYZRGB->points[i].b = pColor[i].b;
-				*/
-
-				pz = (float)rDepth;
-				px = (x - camParam.astDepthParam->cx) * pz / camParam.astDepthParam->fx;
-				py = (camParam.astDepthParam->cy - y) * pz / camParam.astDepthParam->fy;
-				cloud_XYZRGB->points[i].x = px * fScale;
-				cloud_XYZRGB->points[i].y = py * fScale;
-				cloud_XYZRGB->points[i].z = pz * fScale;
-				cloud_XYZRGB->points[i].r = pColor[i].r;
-				cloud_XYZRGB->points[i].g = pColor[i].g;
-				cloud_XYZRGB->points[i].b = pColor[i].b;
-
-				i++;
-			}
 		}
 		std::cout << "getCloudXYZCoordinate: end" << std::endl;
 		return true;
@@ -955,6 +1083,7 @@ void *get_img_bw(void *arg)
 
 	while (!protonect_shutdown)
 	{
+		double height = 0;
 		char buffer[80] = {0};
 		time_t t = std::time(0);
 		struct tm *now = std::localtime(&t);
@@ -978,13 +1107,22 @@ void *get_img_bw(void *arg)
 
 		if (isGenWeightData)
 		{
-			if (genWeightDataLimit <= 0)
-				continue;
+			if (!isGenOnlyOnce)
+			{
+				if (genWeightDataLimit <= 0)
+					continue;
+			}
+			else if (isGenOnlyOnce && genWeightDataLimit == 0)
+			{
+				protonect_shutdown = true;
+				break;
+			}
 
 			bool ret = getCloudXYZRGBCoordinate(cloud, camParam, file_depth_name, file_depth_show_name);
 			if (ret)
 			{
-				std::cout << "getCloudXYZRGBCoordinate:file_depth_name=" << file_depth_name << "frames_count=" << frames_count << std::endl;
+				double height = 0;
+				std::cout << "getCloudXYZRGBCoordinate:file_depth_name=" << file_depth_name << ",frames_count=" << frames_count << std::endl;
 
 				std::cout << "begin save file:" << file_time << std::endl;
 				if (config.CollectFormats.find("point") != string::npos)
@@ -999,7 +1137,11 @@ void *get_img_bw(void *arg)
 				std::cout << "end save file:" << file_time << std::endl;
 				memset(buffer, 0, 80);
 				strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
-				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
+				if (batchNumber.size() == 0)
+				{
+					batchNumber = file_time;
+				}
+				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber, config.RealZ);
 			}
 
 			genWeightDataLimit--;
@@ -1024,6 +1166,7 @@ void *get_img_bw(void *arg)
 					continue;
 				}
 
+				double height = 0;
 				frames_count = 0;
 				last_min = now->tm_min - 1;
 				last_min_weight = pig_weight;
@@ -1039,7 +1182,7 @@ void *get_img_bw(void *arg)
 				batchNumber = string(buffer);
 				memset(buffer, 0, 80);
 				strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", now);
-				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber);
+				table_insert_weight(string(buffer), pig_weight, file_time + ".jpg", file_time + ".pcd", file_time + ".png", batchNumber, config.RealZ);
 			}
 		}
 
@@ -1060,16 +1203,16 @@ int main(int argc, char **argv)
 	pthread_t img, weigh;
 	if (argc < 3)
 	{
-		cout << "for example:./weight config_file start_type[collect|camParam|test limit batch_number]" << endl;
+		cout << "for example:./weight config_file start_type[collect|camParam|grab limit batch_number|test limit]" << endl;
 		exit(0);
 	}
 
 	string config_file(argv[1]);
 	string start_type(argv[2]);
 
-	if (start_type.compare("collect") == 0 || start_type.compare("test") == 0)
+	if (start_type.compare("collect") == 0 || start_type.compare("grab") == 0)
 	{
-		if (start_type.compare("test") == 0)
+		if (start_type.compare("grab") == 0)
 		{
 			isGenWeightData = true;
 			genWeightDataLimit = atoi(argv[3]);
@@ -1100,6 +1243,27 @@ int main(int argc, char **argv)
 		readPipe();
 		pthread_join(weigh, NULL);
 		cout << "Join pthread weigh!" << endl;
+		pthread_join(img, NULL);
+		cout << "Join pthread img!" << endl;
+		exit(0);
+	}
+	else if (start_type.compare("test") == 0)
+	{
+		isGenWeightData = true;
+		isGenOnlyOnce = true;
+		genWeightDataLimit = atoi(argv[3]);
+		batchNumber = string(argv[4]);
+
+		loadConfig(config_file);
+		cout << "Create pthread img!" << endl;
+		res = pthread_create(&img, NULL, get_img_bw, NULL);
+		if (res != 0)
+		{
+			cout << "Create pthread error!" << endl;
+			return -1;
+		}
+		cout << "Create pthread img success!" << endl;
+
 		pthread_join(img, NULL);
 		cout << "Join pthread img!" << endl;
 		exit(0);

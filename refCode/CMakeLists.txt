@@ -31,5 +31,5 @@ link_directories($ENV{QHULL_LIB})
 include_directories($ENV{OPENNI2_INCLUDE}) 
 link_directories($ENV{OPENNI2_REDIST}) 
 add_executable (weight weight.cpp sql_ifly.cpp ini/INIReader.cpp ini/ini.c)
-target_link_libraries (weight -lsqlite3 -lpthread -lOpenNI2 -lopencv_imgproc -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lboost_system -lpcl_common -lpcl_io -ljsoncpp -lpbs)
+target_link_libraries (weight -lsqlite3 -lpthread -lOpenNI2 -lopencv_imgproc -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lboost_system -lpcl_common -lpcl_io -ljsoncpp -lpbs -lpcl_filters)
 
